@@ -16,6 +16,9 @@
 (define-constant ERR_TRADING_SUSPENDED (err u111))
 (define-constant ERR_INVALID_DROUGHT_LEVEL (err u112))
 (define-constant ERR_NOT_AUTHORIZED_OFFICIAL (err u113))
+(define-constant ERR_INVALID_USAGE (err u114))
+(define-constant ERR_USAGE_EXCEEDS_ALLOCATION (err u115))
+(define-constant ERR_USAGE_ALREADY_REPORTED (err u116))
 
 (define-map water-allocations
   { owner: principal }
@@ -66,6 +69,8 @@
 (define-data-var total-trades uint u0)
 (define-data-var total-volume uint u0)
 (define-data-var platform-fee-rate uint u25)
+(define-data-var conservation-reward-rate uint u100)
+(define-data-var total-conservation-rewards uint u0)
 
 (define-map drought-restrictions
   { region: (string-ascii 50) }
@@ -81,6 +86,28 @@
 (define-map authorized-officials
   { official: principal }
   { authorized: bool, region: (string-ascii 50) }
+)
+
+(define-map water-usage-reports
+  { owner: principal, period: uint }
+  {
+    actual-usage: uint,
+    allocated-amount: uint,
+    conservation-amount: uint,
+    reward-earned: uint,
+    report-date: uint,
+    verified: bool
+  }
+)
+
+(define-map user-conservation-stats
+  { user: principal }
+  {
+    total-conservation: uint,
+    total-rewards: uint,
+    reports-count: uint,
+    conservation-rate: uint
+  }
 )
 
 (define-read-only (get-water-allocation (owner principal))
@@ -110,7 +137,9 @@
     total-allocations: (var-get total-allocations),
     total-trades: (var-get total-trades),
     total-volume: (var-get total-volume),
-    platform-fee-rate: (var-get platform-fee-rate)
+    platform-fee-rate: (var-get platform-fee-rate),
+    conservation-reward-rate: (var-get conservation-reward-rate),
+    total-conservation-rewards: (var-get total-conservation-rewards)
   }
 )
 
@@ -162,6 +191,21 @@
     restrictions (get max-allocation-percent restrictions)
     u100
   )
+)
+
+(define-read-only (get-usage-report (owner principal) (period uint))
+  (map-get? water-usage-reports { owner: owner, period: period })
+)
+
+(define-read-only (get-conservation-stats (user principal))
+  (default-to
+    { total-conservation: u0, total-rewards: u0, reports-count: u0, conservation-rate: u0 }
+    (map-get? user-conservation-stats { user: user })
+  )
+)
+
+(define-read-only (calculate-conservation-reward (conservation-amount uint))
+  (/ (* conservation-amount (var-get conservation-reward-rate)) u10000)
 )
 
 (define-public (register-water-allocation (total-allocation uint) (region (string-ascii 50)) (expiry-date uint))
@@ -424,6 +468,73 @@
   )
 )
 
+(define-public (report-water-usage (actual-usage uint) (period uint))
+  (let (
+    (allocation (unwrap! (get-water-allocation tx-sender) ERR_ALLOCATION_NOT_FOUND))
+    (allocated-amount (get total-allocation allocation))
+    (existing-report (get-usage-report tx-sender period))
+    (conservation-amount (if (> allocated-amount actual-usage) (- allocated-amount actual-usage) u0))
+    (reward-amount (calculate-conservation-reward conservation-amount))
+    (current-block u1)
+  )
+    (asserts! (is-none existing-report) ERR_USAGE_ALREADY_REPORTED)
+    (asserts! (> period u0) ERR_INVALID_USAGE)
+    (asserts! (<= actual-usage allocated-amount) ERR_USAGE_EXCEEDS_ALLOCATION)
+    
+    (map-set water-usage-reports
+      { owner: tx-sender, period: period }
+      {
+        actual-usage: actual-usage,
+        allocated-amount: allocated-amount,
+        conservation-amount: conservation-amount,
+        reward-earned: reward-amount,
+        report-date: current-block,
+        verified: false
+      }
+    )
+    
+    (if (> conservation-amount u0)
+      (begin
+        (try! (stx-transfer? reward-amount CONTRACT_OWNER tx-sender))
+        (update-conservation-stats tx-sender conservation-amount reward-amount)
+        (var-set total-conservation-rewards (+ (var-get total-conservation-rewards) reward-amount))
+      )
+      true
+    )
+    
+    (ok {
+      conservation-amount: conservation-amount,
+      reward-earned: reward-amount,
+      efficiency-rate: (if (> allocated-amount u0) (/ (* actual-usage u100) allocated-amount) u0)
+    })
+  )
+)
+
+(define-public (verify-usage-report (owner principal) (period uint))
+  (let (
+    (report (unwrap! (get-usage-report owner period) ERR_INVALID_USAGE))
+    (official-auth (unwrap! (map-get? authorized-officials { official: tx-sender }) ERR_NOT_AUTHORIZED_OFFICIAL))
+  )
+    (asserts! (get authorized official-auth) ERR_NOT_AUTHORIZED_OFFICIAL)
+    
+    (map-set water-usage-reports
+      { owner: owner, period: period }
+      (merge report { verified: true })
+    )
+    
+    (ok true)
+  )
+)
+
+(define-public (set-conservation-reward-rate (new-rate uint))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+    (asserts! (<= new-rate u1000) ERR_INVALID_AMOUNT)
+    (var-set conservation-reward-rate new-rate)
+    (ok new-rate)
+  )
+)
+
 (define-private (update-user-statistics (user principal) (sold uint) (bought uint) (earned uint) (spent uint) (trades uint))
   (let ((current-stats (get-user-statistics user)))
     (map-set user-statistics
@@ -456,6 +567,23 @@
                             (- (get active-listings current-stats) (to-uint (- listing-change)))
                             u0))
       }
+    )
+  )
+)
+
+(define-private (update-conservation-stats (user principal) (conservation-amount uint) (reward-amount uint))
+  (let ((current-stats (get-conservation-stats user)))
+    (let ((new-total-conservation (+ (get total-conservation current-stats) conservation-amount))
+          (new-reports-count (+ (get reports-count current-stats) u1)))
+      (map-set user-conservation-stats
+        { user: user }
+        {
+          total-conservation: new-total-conservation,
+          total-rewards: (+ (get total-rewards current-stats) reward-amount),
+          reports-count: new-reports-count,
+          conservation-rate: (if (> new-reports-count u0) (/ new-total-conservation new-reports-count) u0)
+        }
+      )
     )
   )
 )
