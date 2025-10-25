@@ -19,6 +19,8 @@
 (define-constant ERR_INVALID_USAGE (err u114))
 (define-constant ERR_USAGE_EXCEEDS_ALLOCATION (err u115))
 (define-constant ERR_USAGE_ALREADY_REPORTED (err u116))
+(define-constant ERR_BATCH_LIMIT_EXCEEDED (err u117))
+(define-constant ERR_BATCH_EMPTY (err u118))
 
 (define-map water-allocations
   { owner: principal }
@@ -585,5 +587,38 @@
         }
       )
     )
+  )
+)
+
+(define-private (process-batch-purchase (listing-id uint) (state (response {purchases: (list 50 uint), total-spent: uint, failed: uint} uint)))
+  (match state
+    success-state
+      (match (buy-water-rights listing-id)
+        buy-result
+          (ok {
+            purchases: (unwrap! (as-max-len? (append (get purchases success-state) listing-id) u50) (err u0)),
+            total-spent: (+ (get total-spent success-state) (get total-cost buy-result)),
+            failed: (get failed success-state)
+          })
+        error-response
+          (ok {
+            purchases: (get purchases success-state),
+            total-spent: (get total-spent success-state),
+            failed: (+ (get failed success-state) u1)
+          })
+      )
+    error-value (err error-value)
+  )
+)
+
+(define-public (batch-buy-water-rights (listing-ids (list 50 uint)))
+  (let (
+    (batch-size (len listing-ids))
+    (initial-state (ok {purchases: (list), total-spent: u0, failed: u0}))
+  )
+    (asserts! (> batch-size u0) ERR_BATCH_EMPTY)
+    (asserts! (<= batch-size u50) ERR_BATCH_LIMIT_EXCEEDED)
+    
+    (fold process-batch-purchase listing-ids initial-state)
   )
 )
