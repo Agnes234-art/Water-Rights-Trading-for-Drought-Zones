@@ -21,6 +21,10 @@
 (define-constant ERR_USAGE_ALREADY_REPORTED (err u116))
 (define-constant ERR_BATCH_LIMIT_EXCEEDED (err u117))
 (define-constant ERR_BATCH_EMPTY (err u118))
+(define-constant ERR_LEASE_NOT_FOUND (err u119))
+(define-constant ERR_LEASE_EXPIRED (err u120))
+(define-constant ERR_LEASE_STILL_ACTIVE (err u121))
+(define-constant ERR_INVALID_DURATION (err u122))
 
 (define-map water-allocations
   { owner: principal }
@@ -67,6 +71,34 @@
 )
 
 (define-data-var next-listing-id uint u1)
+(define-data-var next-lease-id uint u1)
+
+(define-map water-leases
+  { lease-id: uint }
+  {
+    lessor: principal,
+    lessee: principal,
+    amount: uint,
+    price-per-block: uint,
+    start-block: uint,
+    end-block: uint,
+    region: (string-ascii 50),
+    active: bool,
+    total-paid: uint
+  }
+)
+
+(define-map user-lease-stats
+  { user: principal }
+  {
+    total-leased-out: uint,
+    total-leased-in: uint,
+    active-leases-as-lessor: uint,
+    active-leases-as-lessee: uint,
+    total-lease-earnings: uint,
+    total-lease-payments: uint
+  }
+)
 (define-data-var total-allocations uint u0)
 (define-data-var total-trades uint u0)
 (define-data-var total-volume uint u0)
@@ -208,6 +240,32 @@
 
 (define-read-only (calculate-conservation-reward (conservation-amount uint))
   (/ (* conservation-amount (var-get conservation-reward-rate)) u10000)
+)
+
+(define-read-only (get-water-lease (lease-id uint))
+  (map-get? water-leases { lease-id: lease-id })
+)
+
+(define-read-only (get-user-lease-stats (user principal))
+  (default-to
+    { total-leased-out: u0, total-leased-in: u0, active-leases-as-lessor: u0, active-leases-as-lessee: u0, total-lease-earnings: u0, total-lease-payments: u0 }
+    (map-get? user-lease-stats { user: user })
+  )
+)
+
+(define-read-only (get-next-lease-id)
+  (var-get next-lease-id)
+)
+
+(define-read-only (calculate-lease-cost (price-per-block uint) (duration uint))
+  (* price-per-block duration)
+)
+
+(define-read-only (is-lease-active (lease-id uint))
+  (match (get-water-lease lease-id)
+    lease (and (get active lease) true)
+    false
+  )
 )
 
 (define-public (register-water-allocation (total-allocation uint) (region (string-ascii 50)) (expiry-date uint))
@@ -537,6 +595,123 @@
   )
 )
 
+(define-public (create-water-lease (amount uint) (price-per-block uint) (duration-blocks uint))
+  (let (
+    (lease-id (var-get next-lease-id))
+    (current-block u1)
+    (allocation (unwrap! (get-water-allocation tx-sender) ERR_ALLOCATION_NOT_FOUND))
+    (end-block (+ current-block duration-blocks))
+    (total-cost (calculate-lease-cost price-per-block duration-blocks))
+  )
+    (asserts! (> amount u0) ERR_INVALID_AMOUNT)
+    (asserts! (> price-per-block u0) ERR_INVALID_PRICE)
+    (asserts! (> duration-blocks u0) ERR_INVALID_DURATION)
+    (asserts! (>= (get available-balance allocation) amount) ERR_INSUFFICIENT_BALANCE)
+    (asserts! (not (is-trading-suspended (get region allocation))) ERR_TRADING_SUSPENDED)
+    
+    (map-set water-allocations
+      { owner: tx-sender }
+      (merge allocation { available-balance: (- (get available-balance allocation) amount) })
+    )
+    
+    (map-set water-leases
+      { lease-id: lease-id }
+      {
+        lessor: tx-sender,
+        lessee: tx-sender,
+        amount: amount,
+        price-per-block: price-per-block,
+        start-block: current-block,
+        end-block: end-block,
+        region: (get region allocation),
+        active: false,
+        total-paid: u0
+      }
+    )
+    
+    (var-set next-lease-id (+ lease-id u1))
+    (ok { lease-id: lease-id, amount: amount, duration: duration-blocks, total-cost: total-cost })
+  )
+)
+
+(define-public (accept-water-lease (lease-id uint))
+  (let (
+    (lease (unwrap! (get-water-lease lease-id) ERR_LEASE_NOT_FOUND))
+    (current-block u1)
+    (duration (- (get end-block lease) (get start-block lease)))
+    (total-cost (calculate-lease-cost (get price-per-block lease) duration))
+    (platform-fee (calculate-platform-fee total-cost))
+    (lessor-payment (- total-cost platform-fee))
+  )
+    (asserts! (not (get active lease)) ERR_LEASE_STILL_ACTIVE)
+    (asserts! (not (is-eq tx-sender (get lessor lease))) ERR_CANNOT_BUY_OWN_LISTING)
+    (asserts! (not (is-trading-suspended (get region lease))) ERR_TRADING_SUSPENDED)
+    
+    (try! (stx-transfer? total-cost tx-sender (get lessor lease)))
+    
+    (map-set water-leases
+      { lease-id: lease-id }
+      (merge lease { 
+        lessee: tx-sender, 
+        active: true, 
+        start-block: current-block,
+        end-block: (+ current-block duration),
+        total-paid: total-cost 
+      })
+    )
+    
+    (update-lease-stats (get lessor lease) (get amount lease) u0 u1 u0 lessor-payment u0)
+    (update-lease-stats tx-sender u0 (get amount lease) u0 u1 u0 total-cost)
+    
+    (ok { lease-id: lease-id, amount: (get amount lease), total-paid: total-cost, end-block: (+ current-block duration) })
+  )
+)
+
+(define-public (terminate-expired-lease (lease-id uint))
+  (let (
+    (lease (unwrap! (get-water-lease lease-id) ERR_LEASE_NOT_FOUND))
+    (current-block u1)
+    (lessor-allocation (unwrap! (get-water-allocation (get lessor lease)) ERR_ALLOCATION_NOT_FOUND))
+  )
+    (asserts! (get active lease) ERR_LEASE_NOT_FOUND)
+    (asserts! (>= current-block (get end-block lease)) ERR_LEASE_STILL_ACTIVE)
+    
+    (map-set water-allocations
+      { owner: (get lessor lease) }
+      (merge lessor-allocation { available-balance: (+ (get available-balance lessor-allocation) (get amount lease)) })
+    )
+    
+    (map-set water-leases
+      { lease-id: lease-id }
+      (merge lease { active: false })
+    )
+    
+    (update-lease-stats (get lessor lease) u0 u0 (- u0 u1) u0 u0 u0)
+    (update-lease-stats (get lessee lease) u0 u0 u0 (- u0 u1) u0 u0)
+    
+    (ok { lease-id: lease-id, amount-returned: (get amount lease) })
+  )
+)
+
+(define-public (cancel-unleased-offer (lease-id uint))
+  (let (
+    (lease (unwrap! (get-water-lease lease-id) ERR_LEASE_NOT_FOUND))
+    (allocation (unwrap! (get-water-allocation tx-sender) ERR_ALLOCATION_NOT_FOUND))
+  )
+    (asserts! (is-eq tx-sender (get lessor lease)) ERR_UNAUTHORIZED)
+    (asserts! (not (get active lease)) ERR_LEASE_STILL_ACTIVE)
+    
+    (map-set water-allocations
+      { owner: tx-sender }
+      (merge allocation { available-balance: (+ (get available-balance allocation) (get amount lease)) })
+    )
+    
+    (map-delete water-leases { lease-id: lease-id })
+    
+    (ok { lease-id: lease-id, amount-returned: (get amount lease) })
+  )
+)
+
 (define-private (update-user-statistics (user principal) (sold uint) (bought uint) (earned uint) (spent uint) (trades uint))
   (let ((current-stats (get-user-statistics user)))
     (map-set user-statistics
@@ -586,6 +761,22 @@
           conservation-rate: (if (> new-reports-count u0) (/ new-total-conservation new-reports-count) u0)
         }
       )
+    )
+  )
+)
+
+(define-private (update-lease-stats (user principal) (leased-out uint) (leased-in uint) (lessor-change uint) (lessee-change uint) (earnings uint) (payments uint))
+  (let ((current-stats (get-user-lease-stats user)))
+    (map-set user-lease-stats
+      { user: user }
+      {
+        total-leased-out: (+ (get total-leased-out current-stats) leased-out),
+        total-leased-in: (+ (get total-leased-in current-stats) leased-in),
+        active-leases-as-lessor: (+ (get active-leases-as-lessor current-stats) lessor-change),
+        active-leases-as-lessee: (+ (get active-leases-as-lessee current-stats) lessee-change),
+        total-lease-earnings: (+ (get total-lease-earnings current-stats) earnings),
+        total-lease-payments: (+ (get total-lease-payments current-stats) payments)
+      }
     )
   )
 )
