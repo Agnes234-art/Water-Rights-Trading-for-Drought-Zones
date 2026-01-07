@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Water Rights Trading Platform</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header>
+        <nav class="navbar">
+            <div class="nav-container">
+                <div class="nav-brand">
+                    <h1>💧 AquaTrade</h1>
+                </div>
+                <div class="nav-menu">
+                    <button class="nav-button" onclick="showSection('dashboard')">Dashboard</button>
+                    <button class="nav-button" onclick="showSection('allocations')">Allocations</button>
+                    <button class="nav-button" onclick="showSection('marketplace')">Marketplace</button>
+                    <button class="nav-button" onclick="showSection('statistics')">Statistics</button>
+                </div>
+            </div>
+        </nav>
+    </header>
+
+    <main>
+        <section id="dashboard" class="section active">
+            <div class="container">
+                <h2>Dashboard</h2>
+                <div class="dashboard-grid">
+                    <div class="card">
+                        <h3>Your Water Rights</h3>
+                        <div class="stat-value" id="user-total-allocation">0</div>
+                        <div class="stat-label">Total Allocation</div>
+                    </div>
+                    <div class="card">
+                        <h3>Available Balance</h3>
+                        <div class="stat-value" id="user-available-balance">0</div>
+                        <div class="stat-label">Available Units</div>
+                    </div>
+                    <div class="card">
+                        <h3>Total Trades</h3>
+                        <div class="stat-value" id="user-trades-count">0</div>
+                        <div class="stat-label">Completed Trades</div>
+                    </div>
+                    <div class="card">
+                        <h3>Total Earned</h3>
+                        <div class="stat-value" id="user-total-earned">0</div>
+                        <div class="stat-label">STX Earned</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="allocations" class="section">
+            <div class="container">
+                <h2>Water Allocations</h2>
+                <div class="form-container">
+                    <div class="form-group">
+                        <h3>Register New Allocation</h3>
+                        <div class="input-group">
+                            <input type="number" id="allocation-amount" placeholder="Water allocation amount" min="1">
+                            <input type="text" id="allocation-region" placeholder="Region (e.g., California Central Valley)" maxlength="50">
+                            <input type="number" id="allocation-expiry" placeholder="Expiry blocks from now" min="1">
+                            <button onclick="registerAllocation()" class="btn-primary">Register Allocation</button>
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <h3>Transfer Water Rights</h3>
+                        <div class="input-group">
+                            <input type="text" id="transfer-recipient" placeholder="Recipient address">
+                            <input type="number" id="transfer-amount" placeholder="Amount to transfer" min="1">
+                            <button onclick="transferWaterRights()" class="btn-secondary">Transfer Rights</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="marketplace" class="section">
+            <div class="container">
+                <h2>Water Rights Marketplace</h2>
+                <div class="marketplace-container">
+                    <div class="marketplace-section">
+                        <h3>Create Listing</h3>
+                        <div class="input-group">
+                            <input type="number" id="listing-amount" placeholder="Amount to sell" min="1">
+                            <input type="number" id="listing-price" placeholder="Price per unit (STX)" min="1">
+                            <input type="number" id="listing-expiry" placeholder="Expiry blocks" min="1">
+                            <button onclick="createListing()" class="btn-primary">Create Listing</button>
+                        </div>
+                    </div>
+                    
+                    <div class="marketplace-section">
+                        <h3>Active Listings</h3>
+                        <div id="listings-container" class="listings-grid">
+                            <div class="loading">Loading listings...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="statistics" class="section">
+            <div class="container">
+                <h2>Platform Statistics</h2>
+                <div class="stats-grid">
+                    <div class="card">
+                        <h3>Total Allocations</h3>
+                        <div class="stat-value" id="total-allocations">0</div>
+                        <div class="stat-label">Registered Allocations</div>
+                    </div>
+                    <div class="card">
+                        <h3>Total Trades</h3>
+                        <div class="stat-value" id="total-trades">0</div>
+                        <div class="stat-label">Completed Trades</div>
+                    </div>
+                    <div class="card">
+                        <h3>Total Volume</h3>
+                        <div class="stat-value" id="total-volume">0</div>
+                        <div class="stat-label">Water Units Traded</div>
+                    </div>
+                    <div class="card">
+                        <h3>Platform Fee</h3>
+                        <div class="stat-value" id="platform-fee">0.25%</div>
+                        <div class="stat-label">Transaction Fee</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <div id="notification" class="notification hidden">
+        <div class="notification-content">
+            <span id="notification-message"></span>
+            <button onclick="hideNotification()" class="notification-close">×</button>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
